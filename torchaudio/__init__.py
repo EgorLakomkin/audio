@@ -18,6 +18,25 @@ def check_input(src):
         raise TypeError('Expected a CPU based tensor, got %s' % type(src))
 
 
+def load_tempo_augment(filepath, tempo_val, out=None, normalization=None):
+    if not os.path.isfile(filepath):
+        raise OSError("{} not found or is a directory".format(filepath))
+
+    # initialize output tensor
+    if out is not None:
+        check_input(out)
+    else:
+        out = torch.FloatTensor()
+
+    sample_rate = _torch_sox.read_audio_file_tempo_augment(filepath, out, tempo_val)
+    # normalize if needed
+    if isinstance(normalization, bool) and normalization:
+        out /= 1 << 31  # assuming 16-bit depth
+    elif isinstance(normalization, (float, int)):
+        out /= normalization  # normalize with custom value
+
+    return out, sample_rate
+
 def load(filepath, out=None, normalization=None):
     """Loads an audio file from disk into a Tensor
 
