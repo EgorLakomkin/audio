@@ -132,27 +132,6 @@ int read_audio_file_tempo_augment(const std::string& file_name, at::Tensor outpu
         std::cout << "Could not add effect" << std::endl;
     free(e);
 
-    //tempo
-    //e = sox_create_effect(sox_find_effect("tempo"));
-
-    /*
-    e = sox_create_effect(sox_find_effect("rate"));
-    if (sox_effect_options(e, 0, NULL) != SOX_SUCCESS)
-        std::cout << "Coult not create effect options rate" << std::endl;
-    if(sox_add_effect(chain, e, &interm_signal, &out->signal) !=
-         SOX_SUCCESS)
-        std::cout << "Coult not add effect options" << std::endl;
-    free(e);
-
-    e = sox_create_effect(sox_find_effect("channels"));
-    if (sox_effect_options(e, 0, NULL) != SOX_SUCCESS)
-        std::cout << "Coult not create options channels" << std::endl;
-    if (sox_add_effect(chain, e, &interm_signal, &out->signal) !=
-         SOX_SUCCESS)
-        std::cout << "Coult not add effect channels" << std::endl;
-    free(e);
-    */
-
     e = sox_create_effect(sox_find_effect("tempo"));
     sox_args[0] = (char*)new_tempo.c_str();
     if (sox_effect_options(e, 1, sox_args) != SOX_SUCCESS)
@@ -197,9 +176,11 @@ int read_audio_file_tempo_augment(const std::string& file_name, at::Tensor outpu
 
 
   sox_delete_effects_chain(chain);
-
+  
   sox_close(out);
   sox_close(in);
+  free(res->buffer);
+  free(res);
 
   return interm_signal.rate;
 }
