@@ -132,11 +132,28 @@ int read_audio_file_tempo_augment(const std::string& file_name, at::Tensor outpu
         std::cout << "Could not add effect" << std::endl;
     free(e);
 
+    e = sox_create_effect(sox_find_effect("rate"));
+    if(sox_effect_options(e, 0, NULL) != SOX_SUCCESS)
+        std::cout << "Coult not create effect rate" << std::endl;
+    if(sox_add_effect(chain, e, &interm_signal, &out->signal) !=
+         SOX_SUCCESS)
+        std::cout << "Could not add effect rate" << std::endl;
+    free(e);
+
+    e = sox_create_effect(sox_find_effect("channels"));
+    if(sox_effect_options(e, 0, NULL) != SOX_SUCCESS)
+        std::cout << "Coult not create effect channels" << std::endl;
+    if(sox_add_effect(chain, e, &interm_signal, &out->signal) !=
+         SOX_SUCCESS)
+        std::cout << "Could not add effect channels" << std::endl;
+    free(e);
+
+
     e = sox_create_effect(sox_find_effect("tempo"));
     sox_args[0] = (char*)new_tempo.c_str();
     if (sox_effect_options(e, 1, sox_args) != SOX_SUCCESS)
         std::cout << "Coult not create effect options tempo" << std::endl;
-    if (sox_add_effect(chain, e, &interm_signal, &in->signal) !=
+    if (sox_add_effect(chain, e, &out->signal, &out->signal) !=
          SOX_SUCCESS)
         std::cout << "Coult not add effect tempo" << std::endl;
     free(e);
@@ -154,13 +171,13 @@ int read_audio_file_tempo_augment(const std::string& file_name, at::Tensor outpu
   // Finally run the effects chain
 
   //std::cout << "Signal length " << signal_length << std::endl; 
-  //std::cout << "interm signal" << interm_signal.length << std::endl;
   //std::cout << "res buffer  " << res->buffer_size << std::endl;
 
   sox_flow_effects(chain, NULL, NULL);
-  
+
   std::vector<sox_sample_t> audio_buffer(interm_signal.length);
   const int64_t samples_read = sox_read(out, audio_buffer.data(), interm_signal.length);
+
   if (samples_read == 0) {
     throw std::runtime_error(
         "Error reading audio file: empty file or read failed in sox_read");
