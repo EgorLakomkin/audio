@@ -174,17 +174,11 @@ int read_audio_file_tempo_augment(const std::string& file_name, at::Tensor outpu
 
   // Finally run the effects chain
 
-  sox_flow_effects(chain, NULL, NULL);
-  //sox_delete_effects_chain(chain);
-
-  //sox_close(out);
-  //sox_close(in);
-
-  int signal_length = out->signal.length;
   //std::cout << "Signal length " << signal_length << std::endl; 
   //std::cout << "interm signal" << interm_signal.length << std::endl;
   //std::cout << "res buffer  " << res->buffer_size << std::endl;
 
+  sox_flow_effects(chain, NULL, NULL);
   
   std::vector<sox_sample_t> audio_buffer(interm_signal.length);
   const int64_t samples_read = sox_read(out, audio_buffer.data(), interm_signal.length);
@@ -200,6 +194,12 @@ int read_audio_file_tempo_augment(const std::string& file_name, at::Tensor outpu
     auto* data = output.data<scalar_t>();
     std::copy(audio_buffer.begin(), audio_buffer.begin() + interm_signal.length, data);
   }); 
+
+
+  sox_delete_effects_chain(chain);
+
+  sox_close(out);
+  sox_close(in);
 
   return interm_signal.rate;
 }
