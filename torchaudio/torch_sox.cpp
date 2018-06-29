@@ -77,7 +77,7 @@ int64_t write_audio(SoxDescriptor& fd, at::Tensor tensor) {
 }
 } // namespace
 
-int read_audio_file_tempo_augment(const std::string& file_name, at::Tensor output, const std::string& new_tempo){
+int read_audio_file_augment(const std::string& file_name, at::Tensor output, const std::vector<std::string>& augment_params){
 
   struct ds_audio_buffer* res = (struct ds_audio_buffer*)malloc(sizeof(struct ds_audio_buffer));
   sox_format_t* in = sox_open_read(
@@ -148,16 +148,26 @@ int read_audio_file_tempo_augment(const std::string& file_name, at::Tensor outpu
         std::cout << "Could not add effect channels" << std::endl;
     free(e);
 
+    std::vector<std::string>::const_iterator it;
 
-    e = sox_create_effect(sox_find_effect("tempo"));
-    sox_args[0] = (char*)new_tempo.c_str();
-    if (sox_effect_options(e, 1, sox_args) != SOX_SUCCESS)
-        std::cout << "Coult not create effect options tempo" << std::endl;
-    if (sox_add_effect(chain, e, &out->signal, &out->signal) !=
-         SOX_SUCCESS)
-        std::cout << "Coult not add effect tempo" << std::endl;
-    free(e);
-    
+    for(it = augment_params.begin(); it != augment_params.end(); it++)
+    {
+        const std::string& aug_param = *it;
+        if ((aug_param.compare("volume") == 0) || (aug_param.compare("tempo") == 0) || (aug_param.compare("pitch") == 0) || (aug_param.compare("speed")==0) || (aug_param.compare("gain") == 0))
+        { 
+            //std::cout << "add effect" << aug_param << std::endl;
+            e = sox_create_effect(sox_find_effect((char*)aug_param.c_str()));
+            it++;
+            const std::string& effect_value = *it;
+            sox_args[0] = (char*)(effect_value.c_str());
+            if (sox_effect_options(e, 1, sox_args) != SOX_SUCCESS)
+                std::cout << "Coult not create effect options" << std::endl;
+            if (sox_add_effect(chain, e, &out->signal, &out->signal) !=
+                 SOX_SUCCESS)
+                std::cout << "Coult not add effect" << std::endl;
+            free(e);
+        }
+    }
     
     e = sox_create_effect(sox_find_effect("output"));
     sox_args[0] = (char*)out;
@@ -273,9 +283,9 @@ PYBIND11_MODULE(_torch_sox, m) {
       &torch::audio::read_audio_file,
       "Reads an audio file into a tensor");
   m.def(
-  "read_audio_file_tempo_augment",
-  &torch::audio::read_audio_file_tempo_augment,
-  "Reads an audio file into a tensor with tempo augmentation");
+  "read_audio_file_augment",
+  &torch::audio::read_audio_file_augment,
+  "Reads an audio file and applies augmentations");
   m.def(
       "write_audio_file",
       &torch::audio::write_audio_file,
