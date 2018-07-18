@@ -117,6 +117,8 @@ int read_audio_file_augment(const std::string& file_name, at::Tensor output, con
   //std::cout << "Input Sample rate : " << (int)in->signal.rate << std::endl;
   //std::cout << "Sample rate : " << res->sample_rate << std::endl;
   sox_effects_chain_t* chain = sox_create_effects_chain(&in->encoding, &out->encoding);
+  //chain->global_info = *sox_get_effects_globals()->global_info;
+  //chain->global_info.verbosity = 0
 
   interm_signal = in->signal;
 
@@ -157,6 +159,9 @@ int read_audio_file_augment(const std::string& file_name, at::Tensor output, con
         { 
             //std::cout << "add effect" << aug_param << std::endl;
             e = sox_create_effect(sox_find_effect((char*)aug_param.c_str()));
+            //e->global_info = sox_get_effects_globals();
+            e->global_info->global_info->verbosity = 0;            
+
             it++;
             const std::string& effect_value = *it;
             sox_args[0] = (char*)(effect_value.c_str());

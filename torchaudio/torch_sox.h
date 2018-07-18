@@ -12,6 +12,8 @@ namespace torch { namespace audio {
 /// error ocurred during reading of the audio data.
 int read_audio_file(const std::string& path, at::Tensor output);
 
+int read_audio_file_tempo_augment(const std::string& file_name, at::Tensor output, const std::string& new_tempo);
+
 /// Writes the data of a `Tensor` into an audio file at the given `path`, with
 /// a certain extension (e.g. `wav`or `mp3`) and sample rate.
 /// Throws `std::runtime_error` when the audio file could not be opened for
