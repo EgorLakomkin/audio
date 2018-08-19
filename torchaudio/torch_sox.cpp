@@ -93,7 +93,6 @@ int read_audio_file_augment(const std::string& file_name, at::Tensor output, con
       throw std::runtime_error("Error opening audio file");
   }
 
-  sox_signalinfo_t interm_signal = in->signal;
   sox_format_t* out = sox_open_memstream_write(&buffer, &buffer_size, &in->signal, &in->encoding, "raw", NULL);
 
   //std::cout << "Input Sample rate : " << (int)in->signal.rate << std::endl;
@@ -107,7 +106,7 @@ int read_audio_file_augment(const std::string& file_name, at::Tensor output, con
     sox_args[0] = (char*)in;
     if(sox_effect_options(e, 1, sox_args) != SOX_SUCCESS)
         std::cout << "Coult not create effect options" << std::endl;
-    if(sox_add_effect(chain, e,  &interm_signal, &in->signal) !=
+    if(sox_add_effect(chain, e,  &in->signal, &in->signal) !=
          SOX_SUCCESS)
         std::cout << "Could not add effect" << std::endl;
     free(e);
@@ -129,7 +128,7 @@ int read_audio_file_augment(const std::string& file_name, at::Tensor output, con
             sox_args[0] = (char*)(effect_value.c_str());
             if (sox_effect_options(e, 1, sox_args) != SOX_SUCCESS)
                 std::cout << "Coult not create effect options" << std::endl;
-            if (sox_add_effect(chain, e,  &interm_signal,  &interm_signal) !=
+            if (sox_add_effect(chain, e,  &in->signal,  &in->signal) !=
                  SOX_SUCCESS)
                 std::cout << "Coult not add effect" << std::endl;
             free(e);
@@ -140,54 +139,38 @@ int read_audio_file_augment(const std::string& file_name, at::Tensor output, con
     sox_args[0] = (char*)out;
     if(sox_effect_options(e, 1, sox_args) != SOX_SUCCESS)
         std::cout << "Coult not create effect options output" << std::endl;
-    if(sox_add_effect(chain, e,  &interm_signal,  &out->signal) !=
+    if(sox_add_effect(chain, e,  &in->signal,  &in->signal) !=
          SOX_SUCCESS)
         std::cout << "Coult not add effect output" << std::endl;
     free(e);
 
+    sox_flow_effects(chain, NULL, NULL);
+
+
     int sample_rate = out->signal.rate;
-  // Finally run the effects chain
-  sox_flow_effects(chain, NULL, NULL);
-  sox_delete_effects_chain(chain);
-  sox_close(out);
-  sox_close(in);
+    static const size_t maxSamples=2048;
+    sox_sample_t samples[maxSamples];
 
-    //std::vector<sox_sample_t> audio_buffer(buffer_size);
-    //const int64_t samples_read = sox_read(out, audio_buffer.data(), buffer_size);
-    //std::copy(buffer, buffer + buffer_size, audio_buffer.data());
-    std::cout << "buffer size " << buffer_size << std::endl;
-    if (buffer_size == 0) {
-        throw std::runtime_error(
-                "Error reading audio file: empty file or read failed in sox_read");
-    }
+    std::vector<sox_sample_t> audio_buffer;
+    for (size_t r; 0 != (r=sox_read(out,samples,maxSamples));)
+        for(int i=0;i<r ;i++)
+            audio_buffer.push_back(samples[i]);
 
-    std::vector<sox_sample_t> converted;
-    int original_size = buffer_size;
-    while(buffer_size)
-    {
-        short val_1 = *buffer;
-        buffer++;
-        short val_2 = *buffer;
-        buffer++;
-        buffer_size -= 2;
-        sox_sample_t  val = (val_2 << 8) | val_1;
-        converted.push_back(val);
-    }
-
-    output.resize_({converted.size(), 1});
-    output = output.fill_(300);
-    //std::cout << output << std::endl;
+    output.resize_({audio_buffer.size(), 1});
     output = output.contiguous();
 
-    /*
+
     AT_DISPATCH_ALL_TYPES(output.type(), "read_audio_buffer", [&] {
         auto* data = output.data<scalar_t>();
-        std::copy(converted.begin(), converted.begin() + converted.size(), data);
-    });*/
+        std::copy(audio_buffer.begin(), audio_buffer.begin() + audio_buffer.size(), data);
+    });
     //TODO: CLEAR MEMORY
     //free(buffer);
-
-  return sample_rate;
+    sox_delete_effects_chain(chain);
+    sox_close(out);
+    sox_close(in);
+    free(buffer);
+    return sample_rate;
 }
 
 int read_audio_file(const std::string& file_name, at::Tensor output) {
