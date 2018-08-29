@@ -112,7 +112,7 @@ int read_audio_file_augment(const std::string& file_name, at::Tensor output, con
     free(e);
 
     std::vector<std::string>::const_iterator it;
-
+    bool flag = false;
     for(it = augment_params.begin(); it != augment_params.end(); it++)
     {
         const std::string& aug_param = *it;
@@ -132,6 +132,11 @@ int read_audio_file_augment(const std::string& file_name, at::Tensor output, con
                  SOX_SUCCESS)
                 std::cout << "Coult not add effect" << std::endl;
             free(e);
+            if(aug_param.compare("tempo") == 0)
+            {
+                if (std::stof(effect_value.c_str()) >= 1.0 )
+                    flag = true;                
+            }
         }
     }
     
@@ -152,6 +157,8 @@ int read_audio_file_augment(const std::string& file_name, at::Tensor output, con
     sox_sample_t samples[maxSamples];
 
     std::vector<sox_sample_t> audio_buffer;
+    if (flag)
+         out->olength = 0;
     for (size_t r; 0 != (r=sox_read(out,samples,maxSamples));)
         for(int i=0;i<r ;i++)
             audio_buffer.push_back(samples[i]);
