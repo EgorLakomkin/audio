@@ -132,7 +132,7 @@ int read_audio_file_augment(const std::string& file_name, at::Tensor output, con
                  SOX_SUCCESS)
                 std::cout << "Coult not add effect" << std::endl;
             free(e);
-            if(aug_param.compare("tempo") == 0)
+            if ((aug_param.compare("tempo") == 0) || (aug_param.compare("speed") == 0)  )
             {
                 if (std::stof(effect_value.c_str()) >= 1.0 )
                     flag = true;                
