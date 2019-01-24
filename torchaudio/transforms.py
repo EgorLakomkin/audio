@@ -1,29 +1,10 @@
 from __future__ import division, print_function
 import torch
-from torch.autograd import Variable
 import numpy as np
 try:
     import librosa
 except ImportError:
     librosa = None
-
-
-def _check_is_variable(tensor):
-    if isinstance(tensor, torch.Tensor):
-        is_variable = False
-        tensor = Variable(tensor, requires_grad=False)
-    elif isinstance(tensor, Variable):
-        is_variable = True
-    else:
-        raise TypeError("tensor should be a Variable or Tensor, but is {}".format(type(tensor)))
-
-    return tensor, is_variable
-
-
-def _tlog10(x):
-    """Pytorch Log10
-    """
-    return torch.log(x) / torch.log(x.new([10]))
 
 
 class Compose(object):
@@ -79,8 +60,8 @@ class Scale(object):
             Tensor: Scaled by the scale factor. (default between -1.0 and 1.0)
 
         """
-        if isinstance(tensor, (torch.LongTensor, torch.IntTensor)):
-            tensor = tensor.float()
+        if not tensor.dtype.is_floating_point:
+            tensor = tensor.to(torch.float32)
 
         return tensor / self.factor
 
@@ -92,29 +73,35 @@ class PadTrim(object):
     """Pad/Trim a 1d-Tensor (Signal or Labels)
 
     Args:
-        tensor (Tensor): Tensor of audio of size (Samples x Channels)
+        tensor (Tensor): Tensor of audio of size (n x c) or (c x n)
         max_len (int): Length to which the tensor will be padded
+        channels_first (bool): Pad for channels first tensors.  Default: `True`
 
     """
 
-    def __init__(self, max_len, fill_value=0):
+    def __init__(self, max_len, fill_value=0, channels_first=True):
         self.max_len = max_len
         self.fill_value = fill_value
+        self.len_dim, self.ch_dim = int(channels_first), int(not channels_first)
 
     def __call__(self, tensor):
         """
 
         Returns:
-            Tensor: (max_len x Channels)
+            Tensor: (c x n) or (n x c)
 
         """
-        if self.max_len > tensor.size(0):
-            pad = torch.ones((self.max_len - tensor.size(0),
-                              tensor.size(1))) * self.fill_value
-            pad = pad.type_as(tensor)
-            tensor = torch.cat((tensor, pad), dim=0)
-        elif self.max_len < tensor.size(0):
-            tensor = tensor[:self.max_len, :]
+        assert tensor.size(self.ch_dim) < 128, \
+            "Too many channels ({}) detected, see channels_first param.".format(tensor.size(self.ch_dim))
+        if self.max_len > tensor.size(self.len_dim):
+            padding = [self.max_len - tensor.size(self.len_dim)
+                       if (i % 2 == 1) and (i // 2 != self.len_dim)
+                       else 0
+                       for i in range(4)]
+            with torch.no_grad():
+                tensor = torch.nn.functional.pad(tensor, padding, "constant", self.fill_value)
+        elif self.max_len < tensor.size(self.len_dim):
+            tensor = tensor.narrow(self.len_dim, 0, self.max_len)
         return tensor
 
     def __repr__(self):
@@ -122,25 +109,26 @@ class PadTrim(object):
 
 
 class DownmixMono(object):
-    """Downmix any stereo signals to mono
+    """Downmix any stereo signals to mono.  Consider using a `SoxEffectsChain` with
+       the `channels` effect instead of this transformation.
 
     Inputs:
-        tensor (Tensor): Tensor of audio of size (Samples x Channels)
+        tensor (Tensor): Tensor of audio of size (c x n) or (n x c)
+        channels_first (bool): Downmix across channels dimension.  Default: `True`
 
     Returns:
         tensor (Tensor) (Samples x 1):
 
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, channels_first=None):
+        self.ch_dim = int(not channels_first)
 
     def __call__(self, tensor):
-        if isinstance(tensor, (torch.LongTensor, torch.IntTensor)):
-            tensor = tensor.float()
+        if not tensor.dtype.is_floating_point:
+            tensor = tensor.to(torch.float32)
 
-        if tensor.size(1) > 1:
-            tensor = torch.mean(tensor.float(), 1, True)
+        tensor = torch.mean(tensor, self.ch_dim, True)
         return tensor
 
     def __repr__(self):
@@ -148,8 +136,7 @@ class DownmixMono(object):
 
 
 class LC2CL(object):
-    """Permute a 2d tensor from samples (Length) x Channels to Channels x
-       samples (Length)
+    """Permute a 2d tensor from samples (n x c) to (c x n)
     """
 
     def __call__(self, tensor):
@@ -162,7 +149,6 @@ class LC2CL(object):
             tensor (Tensor): Tensor of audio signal with shape (CxL)
 
         """
-
         return tensor.transpose(0, 1).contiguous()
 
     def __repr__(self):
@@ -174,60 +160,48 @@ class SPECTROGRAM(object):
 
     Args:
         sr (int): sample rate of audio signal
-        ws (int): window size, often called the fft size as well
+        ws (int): window size
         hop (int, optional): length of hop between STFT windows. default: ws // 2
-        n_fft (int, optional): number of fft bins. default: ws // 2 + 1
+        n_fft (int, optional): size of fft, creates n_fft // 2 + 1 bins. default: ws
         pad (int): two sided padding of signal
         window (torch windowing function): default: torch.hann_window
         wkwargs (dict, optional): arguments for window function
 
     """
-    def __init__(self, sr=16000, ws=400, hop=None, n_fft=None,
+    def __init__(self, ws=400, hop=None, n_fft=None,
                  pad=0, window=torch.hann_window, wkwargs=None):
-        if isinstance(window, Variable):
-            self.window = window
-        else:
-            self.window = window(ws) if wkwargs is None else window(ws, **wkwargs)
-            self.window = Variable(self.window, volatile=True)
-        self.sr = sr
+        self.window = window(ws) if wkwargs is None else window(ws, **wkwargs)
         self.ws = ws
         self.hop = hop if hop is not None else ws // 2
         # number of fft bins. the returned STFT result will have n_fft // 2 + 1
         # number of frequecies due to onesided=True in torch.stft
-        self.n_fft = (n_fft - 1) * 2 if n_fft is not None else ws
+        self.n_fft = n_fft if n_fft is not None else ws
         self.pad = pad
         self.wkwargs = wkwargs
 
     def __call__(self, sig):
         """
         Args:
-            sig (Tensor or Variable): Tensor of audio of size (c, n)
+            sig (Tensor): Tensor of audio of size (c, n)
 
         Returns:
-            spec_f (Tensor or Variable): channels x hops x n_fft (c, l, f), where channels
+            spec_f (Tensor): channels x hops x n_fft (c, l, f), where channels
                 is unchanged, hops is the number of hops, and n_fft is the
                 number of fourier bins, which should be the window size divided
                 by 2 plus 1.
 
         """
-        sig, is_variable = _check_is_variable(sig)
-
         assert sig.dim() == 2
 
         if self.pad > 0:
-            c, n = sig.size()
-            new_sig = sig.new_empty(c, n + self.pad * 2)
-            new_sig[:, :self.pad].zero_()
-            new_sig[:, -self.pad:].zero_()
-            new_sig.narrow(1, self.pad, n).copy_(sig)
-            sig = new_sig
-
+            with torch.no_grad():
+                sig = torch.nn.functional.pad(sig, (self.pad, self.pad), "constant")
         spec_f = torch.stft(sig, self.n_fft, self.hop, self.ws,
                             self.window, center=False,
                             normalized=True, onesided=True).transpose(1, 2)
         spec_f /= self.window.pow(2).sum().sqrt()
         spec_f = spec_f.pow(2).sum(-1)  # get power of "complex" tensor (c, l, n_fft)
-        return spec_f if is_variable else spec_f.data
+        return spec_f
 
 
 class F2M(object):
@@ -237,42 +211,53 @@ class F2M(object):
     Args:
         n_mels (int): number of MEL bins
         sr (int): sample rate of audio signal
-        f_max (float, optional): maximum frequency. default: sr // 2
+        f_max (float, optional): maximum frequency. default: `sr` // 2
         f_min (float): minimum frequency. default: 0
+        n_stft (int, optional): number of filter banks from stft. Calculated from first input
+            if `None` is given.  See `n_fft` in `SPECTROGRAM`.
     """
-    def __init__(self, n_mels=40, sr=16000, f_max=None, f_min=0.):
+    def __init__(self, n_mels=40, sr=16000, f_max=None, f_min=0., n_stft=None):
         self.n_mels = n_mels
         self.sr = sr
         self.f_max = f_max if f_max is not None else sr // 2
         self.f_min = f_min
+        self.fb = self._create_fb_matrix(n_stft) if n_stft is not None else n_stft
 
     def __call__(self, spec_f):
+        if self.fb is None:
+            self.fb = self._create_fb_matrix(spec_f.size(2))
+        spec_m = torch.matmul(spec_f, self.fb)  # (c, l, n_fft) dot (n_fft, n_mels) -> (c, l, n_mels)
+        return spec_m
 
-        spec_f, is_variable = _check_is_variable(spec_f)
-        n_fft = spec_f.size(2)
+    def _create_fb_matrix(self, n_stft):
+        """ Create a frequency bin conversion matrix.
 
-        m_min = 0. if self.f_min == 0 else 2595 * np.log10(1. + (self.f_min / 700))
-        m_max = 2595 * np.log10(1. + (self.f_max / 700))
+        Args:
+            n_stft (int): number of filter banks from spectrogram
+        """
 
+        # get stft freq bins
+        stft_freqs = torch.linspace(self.f_min, self.f_max, n_stft)
+        # calculate mel freq bins
+        m_min = 0. if self.f_min == 0 else self._hertz_to_mel(self.f_min)
+        m_max = self._hertz_to_mel(self.f_max)
         m_pts = torch.linspace(m_min, m_max, self.n_mels + 2)
-        f_pts = (700 * (10**(m_pts / 2595) - 1))
+        f_pts = self._mel_to_hertz(m_pts)
+        # calculate the difference between each mel point and each stft freq point in hertz
+        f_diff = f_pts[1:] - f_pts[:-1]  # (n_mels + 1)
+        slopes = f_pts.unsqueeze(0) - stft_freqs.unsqueeze(1)  # (n_stft, n_mels + 2)
+        # create overlapping triangles
+        z = torch.tensor(0.)
+        down_slopes = (-1. * slopes[:, :-2]) / f_diff[:-1]  # (n_stft, n_mels)
+        up_slopes = slopes[:, 2:] / f_diff[1:]  # (n_stft, n_mels)
+        fb = torch.max(z, torch.min(down_slopes, up_slopes))
+        return fb
 
-        bins = torch.floor(((n_fft - 1) * 2) * f_pts / self.sr).long()
+    def _hertz_to_mel(self, f):
+        return 2595. * torch.log10(torch.tensor(1.) + (f / 700.))
 
-        fb = torch.zeros(n_fft, self.n_mels)
-        for m in range(1, self.n_mels + 1):
-            f_m_minus = bins[m - 1].item()
-            f_m = bins[m].item()
-            f_m_plus = bins[m + 1].item()
-
-            if f_m_minus != f_m:
-                fb[f_m_minus:f_m, m - 1] = (torch.arange(f_m_minus, f_m) - f_m_minus) / (f_m - f_m_minus)
-            if f_m != f_m_plus:
-                fb[f_m:f_m_plus, m - 1] = (f_m_plus - torch.arange(f_m, f_m_plus)) / (f_m_plus - f_m)
-
-        fb = Variable(fb)
-        spec_m = torch.matmul(spec_f, fb)  # (c, l, n_fft) dot (n_fft, n_mels) -> (c, l, n_mels)
-        return spec_m if is_variable else spec_m.data
+    def _mel_to_hertz(self, mel):
+        return 700. * (10**(mel / 2595.) - 1.)
 
 
 class SPEC2DB(object):
@@ -291,11 +276,10 @@ class SPEC2DB(object):
 
     def __call__(self, spec):
 
-        spec, is_variable = _check_is_variable(spec)
-        spec_db = self.multiplier * _tlog10(spec / spec.max())  # power -> dB
+        spec_db = self.multiplier * torch.log10(spec / spec.max())  # power -> dB
         if self.top_db is not None:
-            spec_db = torch.max(spec_db, spec_db.new([self.top_db]))
-        return spec_db if is_variable else spec_db.data
+            spec_db = torch.max(spec_db, torch.tensor(self.top_db, dtype=spec_db.dtype))
+        return spec_db
 
 
 class MEL2(object):
@@ -310,23 +294,21 @@ class MEL2(object):
 
     Args:
         sr (int): sample rate of audio signal
-        ws (int): window size, often called the fft size as well
-        hop (int, optional): length of hop between STFT windows. default: ws // 2
-        n_fft (int, optional): number of fft bins. default: ws // 2 + 1
+        ws (int): window size
+        hop (int, optional): length of hop between STFT windows. default: `ws` // 2
+        n_fft (int, optional): number of fft bins. default: `ws` // 2 + 1
         pad (int): two sided padding of signal
         n_mels (int): number of MEL bins
-        window (torch windowing function): default: torch.hann_window
+        window (torch windowing function): default: `torch.hann_window`
         wkwargs (dict, optional): arguments for window function
 
     Example:
         >>> sig, sr = torchaudio.load("test.wav", normalization=True)
-        >>> sig = transforms.LC2CL()(sig)  # (n, c) -> (c, n)
         >>> spec_mel = transforms.MEL2(sr)(sig)  # (c, l, m)
     """
     def __init__(self, sr=16000, ws=400, hop=None, n_fft=None,
                  pad=0, n_mels=40, window=torch.hann_window, wkwargs=None):
-        self.window = window(ws) if wkwargs is None else window(ws, **wkwargs)
-        self.window = Variable(self.window, requires_grad=False)
+        self.window = window
         self.sr = sr
         self.ws = ws
         self.hop = hop if hop is not None else ws // 2
@@ -337,6 +319,13 @@ class MEL2(object):
         self.top_db = -80.
         self.f_max = None
         self.f_min = 0.
+        self.spec = SPECTROGRAM(self.ws, self.hop, self.n_fft,
+                                self.pad, self.window, self.wkwargs)
+        self.fm = F2M(self.n_mels, self.sr, self.f_max, self.f_min)
+        self.s2db = SPEC2DB("power", self.top_db)
+        self.transforms = Compose([
+            self.spec, self.fm, self.s2db,
+        ])
 
     def __call__(self, sig):
         """
@@ -349,19 +338,9 @@ class MEL2(object):
                 number of mel bins.
 
         """
+        spec_mel_db = self.transforms(sig)
 
-        sig, is_variable = _check_is_variable(sig)
-
-        transforms = Compose([
-            SPECTROGRAM(self.sr, self.ws, self.hop, self.n_fft,
-                        self.pad, self.window),
-            F2M(self.n_mels, self.sr, self.f_max, self.f_min),
-            SPEC2DB("power", self.top_db),
-        ])
-
-        spec_mel_db = transforms(sig)
-
-        return spec_mel_db if is_variable else spec_mel_db.data
+        return spec_mel_db
 
 
 class MEL(object):
@@ -406,8 +385,8 @@ class MEL(object):
 
 
 class BLC2CBL(object):
-    """Permute a 3d tensor from Bands x samples (Length) x Channels to Channels x
-       Bands x samples (Length)
+    """Permute a 3d tensor from Bands x Sample length x Channels to Channels x
+       Bands x Samples length
     """
 
     def __call__(self, tensor):
@@ -456,10 +435,10 @@ class MuLawEncoding(object):
         if isinstance(x, np.ndarray):
             x_mu = np.sign(x) * np.log1p(mu * np.abs(x)) / np.log1p(mu)
             x_mu = ((x_mu + 1) / 2 * mu + 0.5).astype(int)
-        elif isinstance(x, (torch.Tensor, torch.LongTensor)):
-            if isinstance(x, torch.LongTensor):
-                x = x.float()
-            mu = torch.FloatTensor([mu])
+        elif isinstance(x, torch.Tensor):
+            if not x.dtype.is_floating_point:
+                x = x.to(torch.float)
+            mu = torch.tensor(mu, dtype=x.dtype)
             x_mu = torch.sign(x) * torch.log1p(mu *
                                                torch.abs(x)) / torch.log1p(mu)
             x_mu = ((x_mu + 1) / 2 * mu + 0.5).long()
@@ -498,10 +477,10 @@ class MuLawExpanding(object):
         if isinstance(x_mu, np.ndarray):
             x = ((x_mu) / mu) * 2 - 1.
             x = np.sign(x) * (np.exp(np.abs(x) * np.log1p(mu)) - 1.) / mu
-        elif isinstance(x_mu, (torch.Tensor, torch.LongTensor)):
-            if isinstance(x_mu, torch.LongTensor):
-                x_mu = x_mu.float()
-            mu = torch.FloatTensor([mu])
+        elif isinstance(x_mu, torch.Tensor):
+            if not x_mu.dtype.is_floating_point:
+                x_mu = x_mu.to(torch.float)
+            mu = torch.tensor(mu, dtype=x_mu.dtype)
             x = ((x_mu) / mu) * 2 - 1.
             x = torch.sign(x) * (torch.exp(torch.abs(x) * torch.log1p(mu)) - 1.) / mu
         return x
